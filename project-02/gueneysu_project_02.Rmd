@@ -1,0 +1,465 @@
+---
+title: "Exploring Florida Lakes"
+author: "Tugba Gueneysu"
+output:
+  html_document:
+    keep_md: true
+    toc: true
+    toc_float: true
+date: "2026-06-24"
+---
+
+## Motivation
+
+My year abroad in the United States is slowly coming to an end, and looking back, I realize how little I actually knew about Florida before I arrived. Before coming here, I mainly associated Florida with sunshine, beaches, warm weather, and alligators. After spending about ten months in the state, I noticed that lakes are also a very visible part of Florida’s landscape.
+
+This became especially clear to me in Lakeland, the city where my university is located. As the name already suggests, lakes are a visible part of the local landscape and everyday environment. This made me curious to learn more about how many lakes there are in Florida, how large they are, and how they are distributed across the state.
+
+For this reason, I decided to work with the Florida Lakes dataset. The goal of this project is to explore the spatial distribution and characteristics of lakes in Florida. In particular, I want to investigate how large the lakes are, how many lakes are included in the dataset, and what additional patterns or insights can be discovered through data visualization.
+
+## Description of the Data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 9,
+  fig.height = 6
+)
+
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(broom)
+library(htmlwidgets)
+library(here)
+
+dir.create(here::here("figures"), showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r load-data, message=FALSE, warning=FALSE}
+florida_lakes <- st_read(here::here("data", "Florida_Lakes", "Florida_Lakes.shp"), quiet=TRUE)
+```
+
+```{r data-overview, message=FALSE, warning=FALSE, results="hide"}
+# Number of rows and columns
+dim(florida_lakes)
+
+# Column names
+names(florida_lakes)
+```
+The Florida Lakes dataset contains 4,243 observations and 7 variables. Each observation represents a lake in Florida. Since the dataset is provided as a shapefile, it includes both attribute information and spatial geometry. The geometry type is MULTIPOLYGON, which means that each lake is represented as one or more polygon shapes on the map.
+
+The attribute table includes variables such as the lake name, county, perimeter, shape area, and shape length. The dataset also includes an OBJECTID column, which serves as a unique identifier for each lake. The dataset uses WGS 84 as its coordinate reference system, which was identified from the output of the `st_read()` function. A coordinate reference system describes how locations on Earth are represented in the dataset. In this case, the lake geometries are stored using geographic coordinates, meaning longitude and latitude values, which is useful for mapping because it allows R to place the lakes correctly on a map.
+
+To better understand the structure and quality of the dataset, I inspected the number of rows and columns, reviewed the variable names, examined the data types, and checked for missing values. This step was important because it helped me identify which variables could be used for analysis and visualization.
+
+
+```{r missing-values, message=FALSE, warning=FALSE, results="hide"}
+colSums(is.na(florida_lakes))
+```
+
+The missing value check showed that the dataset does not contain any missing values. Each variable has a missing value count of zero. Therefore, no additional cleaning steps were necessary for handling missing data before continuing with the analysis.
+
+## Data Preparation
+
+```{r data-preparation, message=FALSE, warning=FALSE, results="hide"}
+florida_lakes_projected <- st_transform(florida_lakes, 3086)
+
+# Create new variables for area and perimeter
+florida_lakes_clean <- florida_lakes_projected %>%
+  mutate(
+    area_km2 = as.numeric(st_area(geometry)) / 1000000,
+    perimeter_km = as.numeric(st_length(st_cast(geometry, "MULTILINESTRING"))) / 1000
+  )
+
+glimpse(florida_lakes_clean)
+```
+```{r area-summary, message=FALSE, warning=FALSE}
+florida_lakes_clean %>%
+  st_drop_geometry() %>%
+  summarise(
+    number_of_lakes = n(),
+    mean_area_km2 = mean(area_km2, na.rm = TRUE),
+    median_area_km2 = median(area_km2, na.rm = TRUE),
+    min_area_km2 = min(area_km2, na.rm = TRUE),
+    max_area_km2 = max(area_km2, na.rm = TRUE)
+  )
+```
+
+To prepare the dataset for analysis, I first transformed the spatial data into a projected coordinate reference system using EPSG 3086. The original dataset uses WGS 84, which stores locations as longitude and latitude coordinates. While this is useful for mapping, a projected coordinate system is more appropriate for calculating measurements such as area and perimeter.
+
+After transforming the data, I created two additional variables: `area_km2` and `perimeter_km`. The variable `area_km2` represents the calculated lake area in square kilometers, making the size of the lakes easier to interpret. The variable `perimeter_km` represents the perimeter of each lake in kilometers.
+
+The prepared dataset still contains 4,243 observations, but now includes 9 variables instead of the original 7. This means that no observations were removed during the preparation process. Instead, the dataset was enriched with additional variables that are more useful for analysis and visualization.
+
+The summary statistics show that the average lake area is approximately 1.05 square kilometers, while the median lake area is only about 0.08 square kilometers. This difference suggests that the distribution of lake sizes is skewed: most lakes are relatively small, while a few very large lakes increase the average. The largest lake in the dataset is Lake Okeechobee, with an area of about 1,296 square kilometers, making it much larger than all other lakes in the top ten.
+
+
+```{r largest-lakes, message=FALSE, warning=FALSE}
+florida_lakes_clean %>%
+  st_drop_geometry() %>%
+  arrange(desc(area_km2)) %>%
+  select(NAME, COUNTY, area_km2) %>%
+  head(10)
+```
+
+The list of the ten largest lakes shows that Lake Okeechobee is by far the largest lake in the dataset. With an area of more than 1,296 square kilometers, it is much larger than the second-largest lake, Lake George. This indicates that Florida’s lake system contains a few very large lakes, but most lakes are much smaller. This pattern is also reflected in the difference between the mean and median lake area.
+
+## Visualizations
+
+### Visualization 1: Spatial Distribution of Florida Lakes
+
+The first visualization focuses on the spatial distribution of lakes across Florida. Since this project is based on a shapefile, I wanted to begin with a map to understand where the lakes are located and whether they are evenly distributed across the state or concentrated in specific areas.
+The question for this visualization is: Where are lakes located in Florida, and are larger lakes concentrated in certain regions?
+My goal with this map was to get a first geographic overview of the dataset. By coloring the lakes according to their calculated area in square kilometers, the visualization not only shows the location of the lakes, but also highlights differences in lake size. This helps identify whether very large lakes stand out spatially and whether smaller lakes appear more clustered in particular parts of Florida.
+
+```{r spatial-map, message=FALSE, warning=FALSE, fig.alt="A map of Florida showing thousands of lakes as colored polygons, where color represents lake area on a viridis scale. Most lakes are small and similarly colored, with Lake Okeechobee in southern Florida standing out clearly as much larger and a different color than nearly every other lake."}
+plot1_map <- ggplot(florida_lakes_clean) +
+  geom_sf(aes(fill = area_km2), color = NA) +
+  scale_fill_viridis_c(
+    option = "C",
+    trans = "sqrt",
+    name = "Area (km²)"
+  ) +
+  labs(
+    title = "Spatial Distribution of Lakes in Florida",
+    subtitle = "Lakes are colored by their calculated area in square kilometers",
+    caption = "Data source: Florida Lakes shapefile"
+  ) +
+  theme_minimal()
+
+plot1_map
+```
+
+```{r save-plot1-map}
+ggsave(here::here("figures", "lakes_spatial_map.png"), plot1_map, width = 9, height = 6, dpi = 300)
+```
+
+The map shows that lakes are spread across many parts of Florida, but they are not distributed completely evenly. Several clusters of smaller lakes appear in central Florida, while some larger lakes stand out more clearly because of their size and color. Lake Okeechobee (yellow) is especially visible in the southern part of the state and appears much larger than most other lakes in the dataset. This supports the earlier summary statistics, which showed that the lake size distribution is strongly influenced by a few very large lakes.
+
+### Visualization 2: Distribution of Lake Sizes
+
+After creating a spatial overview of the lakes, I wanted to take a closer look at the size distribution. The summary statistics already showed that the mean lake area is much larger than the median lake area, which suggests that the dataset contains many small lakes and only a few very large ones.
+My question for this visualization is: How are lake sizes distributed in Florida, and are most lakes small or large?
+The goal of this histogram is to show how common different lake sizes are. Since the lake areas vary strongly, I used a log scale on the x-axis. This makes the distribution easier to read because otherwise the very large lakes would dominate the plot and make the smaller lakes harder to see.
+
+```{r lake-size-distribution, message=FALSE, warning=FALSE, echo=FALSE, fig.alt="A histogram of lake area on a log scale, showing a right-skewed distribution where most lakes cluster at small areas and a dashed vertical line marks the median area, far to the left of where a few very large lakes extend the distribution."}
+lake_area_data <- florida_lakes_clean %>%
+  filter(area_km2 > 0)
+
+median_area <- median(lake_area_data$area_km2)
+
+plot2_hist <- ggplot(lake_area_data, aes(x = area_km2)) +
+  geom_histogram(bins = 50) +
+  geom_vline(
+    xintercept = median_area,
+    linetype = "dashed",
+    linewidth = 0.8
+  ) +
+  annotate(
+    "text",
+    x = median_area,
+    y = Inf,
+    label = paste0("Median = ", round(median_area, 2), " km²"),
+    vjust = 2,
+    hjust = -0.1
+  ) +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of Lake Sizes in Florida",
+    subtitle = paste0("Most lakes are small, while a few very large lakes stretch the distribution (n = ", nrow(lake_area_data), " lakes)"),
+    x = "Lake area (km², log scale)",
+    y = "Number of lakes"
+  ) +
+  theme_minimal()
+
+plot2_hist
+```
+
+```{r save-plot2-hist}
+ggsave(here::here("figures", "lakes_size_histogram.png"), plot2_hist, width = 9, height = 6, dpi = 300)
+```
+
+The histogram shows that most lakes in Florida are relatively small. The highest concentration of lakes is around smaller area values, while only a few lakes have very large areas. This confirms the pattern from the summary statistics: the mean lake area is increased by a small number of very large lakes, while the median lake area better represents the typical lake in the dataset.
+
+The use of a log scale helps reveal this pattern more clearly. Without the log scale, the difference between small lakes and very large lakes would be too extreme, and the main distribution of smaller lakes would be difficult to interpret.
+
+### Bad Chart Redesign: Lake Size Distribution Before and After
+
+For the redesign requirement, I intentionally reproduced a weaker version of the lake-size histogram. The original version below uses a regular x-axis even though the lake areas are extremely skewed. Because Lake Okeechobee is much larger than most other lakes, the regular-scale histogram stretches the x-axis so far that the many smaller lakes are compressed into the left side of the plot. This makes the most important pattern in the data harder to read.
+
+```{r bad-chart-before, message=FALSE, warning=FALSE, fig.alt="A poorly designed histogram of Florida lake areas using a regular x-axis, where most lakes are compressed into a narrow area near zero because a few very large lakes, especially Lake Okeechobee, stretch the scale."}
+plot2_bad_hist <- ggplot(lake_area_data, aes(x = area_km2)) +
+  geom_histogram(bins = 50) +
+  labs(
+    title = "Before: Lake Size Distribution on a Regular Scale",
+    subtitle = "Very large lakes stretch the x-axis and hide variation among the many smaller lakes",
+    x = "Lake area (km²)",
+    y = "Number of lakes"
+  ) +
+  theme_minimal()
+
+plot2_bad_hist
+```
+
+```{r save-bad-chart-before}
+ggsave(here::here("figures", "lakes_size_histogram_before_bad.png"), plot2_bad_hist, width = 9, height = 6, dpi = 300)
+```
+
+The redesigned version fixes this problem by using a log scale on the x-axis and adding a median reference line. The log scale does not change the data, but it changes the visual spacing so that small and medium-sized lakes become visible instead of being flattened by a few extreme values. The median line also gives the reader a clearer reference point for what a typical lake size looks like in this skewed distribution.
+
+```{r bad-chart-after, message=FALSE, warning=FALSE, fig.alt="An improved histogram of Florida lake areas using a log-scaled x-axis and a dashed median line, making the distribution of smaller and medium-sized lakes much easier to read despite a few very large lakes."}
+plot2_redesign_after <- plot2_hist +
+  labs(
+    title = "After: Lake Size Distribution with a Log Scale",
+    subtitle = "The log scale reveals the many small lakes while still keeping the very large lakes in the chart",
+    x = "Lake area (km², log scale)",
+    y = "Number of lakes"
+  )
+
+plot2_redesign_after
+```
+
+```{r save-bad-chart-after}
+ggsave(here::here("figures", "lakes_size_histogram_after_redesign.png"), plot2_redesign_after, width = 9, height = 6, dpi = 300)
+```
+
+This before-and-after comparison shows why scale choices matter. The regular-scale version is not technically wrong, but it is misleading because it hides the shape of the distribution that most lakes belong to. The redesigned version makes the same dataset more interpretable by choosing a scale that matches the skewed structure of the data.
+
+### Visualization 3: Interactive Map
+
+Before creating the interactive map, I wanted to make the lake data more explorable. The previous static map showed the overall spatial distribution, but it didn't allow us to inspect individual lakes more closely. Therefore, my question for this visualization is: How can individual lakes be explored in more detail, including their name, county, and area?
+
+The goal of this visualization is to create an interactive map where users can click on a lake and see additional information. This makes the visualization more detailed and allows the viewer to explore the dataset based on personal interest.
+
+```{r interactive-map, message=FALSE, warning=FALSE}
+florida_lakes_wgs84 <- st_transform(florida_lakes_clean, 4326)
+
+lake_map <- leaflet(florida_lakes_wgs84) %>%
+  addTiles() %>%
+  addPolygons(
+    popup = ~paste0(
+      "<strong>Name:</strong> ", NAME, "<br>",
+      "<strong>County:</strong> ", COUNTY, "<br>",
+      "<strong>Area:</strong> ", round(area_km2, 2), " km²"
+    ),
+    weight = 1,
+    fillOpacity = 0.5
+  )
+
+lake_map
+```
+
+```{r save-interactive-map, message=FALSE, warning=FALSE}
+# Save a self-contained HTML version of the interactive map,
+# so it can be opened and explored independently of the knitted report.
+htmlwidgets::saveWidget(lake_map, file = here::here("project-02", "florida-lakes-map.html"), selfcontained = TRUE)
+```
+
+The interactive map allows the viewer to click on individual lakes and see their name, county, and calculated area. Compared to the static map, this version supports a more exploratory form of data visualization. It helps users not only see where lakes are located, but also investigate specific lakes in more detail. This map can show where lakes are located and how lake size varies spatially. However, it does not explain why lakes are located in these areas or whether they are used for recreation, tourism, or ecological purposes.
+
+A static map, like Visualization 1, is necessarily a single fixed snapshot:
+it can show overall spatial patterns and use color to encode area, but it
+cannot tell the viewer *which specific lake* they are looking at without a
+label cluttering the entire map. The interactivity here lets the reader click
+on any single one of the 4,243 lakes and get its exact name, county, and
+area, a level of individual lookup that a static image of this density
+simply could not provide without becoming illegible.
+
+### Visualization 4: Model Visualization
+
+For the model visualization, I wanted to explore the relationship between lake area and lake perimeter. Since both variables describe the physical size and shape of a lake, it is reasonable to expect that larger lakes also tend to have larger perimeters.
+My question for this visualization is: Is there a relationship between the area of a lake and its perimeter?
+The goal of this plot is to show whether lake area is associated with lake perimeter. I used a scatterplot to show the relationship between the two variables and added a linear model to visualize the overall trend. Because both area and perimeter vary strongly across the dataset, I used log scales for both axes. This makes the pattern easier to see and reduces the visual dominance of very large lakes.
+
+```{r model-visualization, message=FALSE, warning=FALSE, fig.alt="A scatterplot of lake perimeter against lake area, both on log scales, showing a clear positive linear trend with a fitted regression line and confidence band, though individual points scatter noticeably around the line."}
+lake_model_data <- florida_lakes_clean %>%
+  st_drop_geometry() %>%
+  filter(area_km2 > 0, perimeter_km > 0)
+
+plot4_scatter <- ggplot(lake_model_data, aes(x = area_km2, y = perimeter_km)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(
+    title = "Relationship Between Lake Area and Perimeter",
+    subtitle = "A linear model is shown on log-transformed values",
+    x = "Lake area (km², log scale)",
+    y = "Lake perimeter (km, log scale)"
+  ) +
+  theme_minimal()
+
+plot4_scatter
+```
+
+```{r save-plot4-scatter}
+ggsave(here::here("figures", "lakes_area_perimeter_scatter.png"), plot4_scatter, width = 9, height = 6, dpi = 300)
+```
+The plot shows a clear positive relationship between lake area and lake perimeter. In general, lakes with a larger area also have a larger perimeter. This is shown by the upward trend of the linear model line.
+
+However, the points don't all fall exactly on the line. This means that area is not the only factor associated with perimeter. The shape of a lake also matters. For example, two lakes can have a similar area, but a lake with a more irregular or complex shape may have a longer perimeter than a lake with a simpler, rounder shape.
+
+#### Model Coefficients
+
+To go beyond a visual trend line, I fit the linear model explicitly on the log-transformed variables and extracted its coefficients. This lets me report the actual estimated slope and intercept, along with how much variation in perimeter the model explains.
+
+```{r model-fit, message=FALSE, warning=FALSE}
+lake_lm <- lm(log10(perimeter_km) ~ log10(area_km2), data = lake_model_data)
+
+model_summary <- summary(lake_lm)
+r_squared <- model_summary$r.squared
+
+coef_table <- broom::tidy(lake_lm, conf.int = TRUE) %>%
+  mutate(term = recode(term,
+                        "(Intercept)" = "Intercept",
+                        "log10(area_km2)" = "log10(Area)"))
+
+coef_table
+```
+
+```{r model-coef-plot, message=FALSE, warning=FALSE, fig.width=7, fig.height=4, fig.alt="A coefficient plot showing the estimated intercept and slope of the linear model of log perimeter on log area, each as a point with a 95 percent confidence interval error bar, with the slope's confidence interval clearly not crossing zero."}
+plot4_coef <- ggplot(coef_table, aes(x = term, y = estimate)) +
+  geom_point(size = 3, color = "steelblue4") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.15, color = "steelblue4") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  coord_flip() +
+  labs(
+    title = "Linear Model Coefficients: log10(Perimeter) ~ log10(Area)",
+    subtitle = paste0("R² = ", round(r_squared, 3), ", n = ", nrow(lake_model_data), " lakes"),
+    x = NULL,
+    y = "Coefficient estimate (with 95% CI)"
+  ) +
+  theme_minimal()
+
+plot4_coef
+```
+
+```{r save-plot4-coef}
+ggsave(here::here("figures", "lakes_model_coefficients.png"), plot4_coef, width = 7, height = 4, dpi = 300)
+```
+
+The coefficient plot reports the fitted model directly rather than relying only on the visual impression of the trend line. The slope coefficient for `log10(Area)` is `r round(coef(lake_lm)[2], 3)`, with a 95% confidence interval that does not cross zero, confirming that the positive relationship between area and perimeter is statistically well supported and not just a visual pattern in the scatterplot. The model explains about `r round(r_squared * 100, 1)`% of the variance in log-transformed perimeter (R² = `r round(r_squared, 3)`), based on all `r nrow(lake_model_data)` lakes with positive area and perimeter values. The remaining variance reflects the fact that lake shape, not area alone, also influences perimeter.
+
+Overall, the model supports the expectation that larger lakes tend to have larger perimeters, while also showing that lake shape creates variation around this general pattern.
+The model is used as a descriptive tool, not as a causal explanation or prediction model. It shows the general association between lake area and perimeter, quantified by the slope and R² above, but it does not explain the causes of lake shape or lake formation.
+
+### Visualization 5: Counties with the Most Lakes
+
+After exploring the overall spatial distribution and lake size distribution, I wanted to use the county variable to understand where lake features are most frequent. The guiding question for this visualization is: Which counties contain the largest number of lakes in the dataset?
+
+```{r county-lake-counts, message=FALSE, warning=FALSE, echo=FALSE, fig.alt="A horizontal bar chart of the top 10 Florida counties by number of recorded lake features, each bar labeled with its exact count, showing a noticeable drop-off in lake count from the highest-ranked county to the tenth."}
+top_counties <- florida_lakes_clean %>%
+  st_drop_geometry() %>%
+  count(COUNTY, sort = TRUE) %>%
+  slice_max(n, n = 10)
+
+plot5_counties <- ggplot(top_counties, aes(x = reorder(COUNTY, n), y = n)) +
+  geom_col() +
+  geom_text(aes(label = n), hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Top 10 Counties by Number of Lakes",
+    subtitle = "County-level grouping shows where lake features are most frequent in the dataset",
+    x = "County",
+    y = "Number of lakes"
+  ) +
+  theme_minimal()
+
+plot5_counties
+```
+
+```{r save-plot5-counties}
+ggsave(here::here("figures", "lakes_top_counties.png"), plot5_counties, width = 9, height = 6, dpi = 300)
+```
+
+This bar chart shows that the number of lakes differs strongly by county. This does not necessarily mean that these counties have the largest total lake area, but it shows where lake features are most frequently recorded in the dataset. It is also worth noting that a county with many small lakes and a county with few but very large lakes would look identical in this chart, since it counts lake *features* rather than lake *area*. The count labels were added to make the underlying numbers transparent rather than relying on bar height alone.
+
+## Findings
+
+The visualizations showed that Florida has a large number of lakes, but that these lakes vary strongly in size. The dataset contains 4,243 lakes, and the spatial map shows that lakes are spread across different parts of the state. However, they are not evenly distributed. Many smaller lakes appear especially in central Florida, while some larger lakes stand out more clearly on the map.
+
+The distribution of lake sizes confirmed that most lakes in the dataset are relatively small. The median lake area is much smaller than the mean lake area, which shows that the distribution is strongly skewed. This means that a few very large lakes increase the average, while the typical lake is much smaller.
+
+Lake Okeechobee is the most noticeable example of this pattern. It is by far the largest lake in the dataset, with an area of about 1,296 square kilometers. Compared to the second-largest lake, Lake George, it is much larger and strongly influences the overall size distribution.
+
+The model visualization showed a clear positive relationship between lake area and lake perimeter. Larger lakes generally also have larger perimeters. However, the relationship is not perfect because lake shape also matters. Lakes with more irregular shapes can have longer perimeters than lakes with simpler shapes, even if their areas are similar.
+
+## Discussion
+
+At the beginning of this assignment, I planned to create visualizations that would explore the Florida Lakes dataset from different perspectives. Since the dataset is spatial, my first goal was to create a map showing where lakes are located across Florida. I also planned to create a distribution plot of lake sizes to understand whether most lakes in the dataset are small or large. In addition, I wanted to include an interactive map so that individual lakes could be explored more closely by name, county, and area. For the model visualization, I planned to examine the relationship between lake area and lake perimeter. After inspecting the available variables, I also added a county-level bar chart to make stronger use of the `COUNTY` variable and to compare where lake features are most frequent in the dataset.
+
+Before creating the visualizations, several cleaning and preparation steps were necessary. First, I loaded the shapefile into R using the `sf` package and inspected the structure of the dataset. I checked the number of observations and variables, reviewed the attribute columns, examined the coordinate reference system, and checked for missing values. The missing value check showed that all columns had a missing value count of zero, so no rows had to be removed because of incomplete data. However, the dataset still required preparation because it is spatial data. The original coordinate reference system is WGS 84, which stores locations as longitude and latitude. This is useful for mapping, but it is not ideal for calculating areas and distances. Therefore, I transformed the data into a projected coordinate reference system before calculating lake area and perimeter. After this transformation, I created new variables such as `area_km2` and `perimeter_km`, which made the measurements easier to interpret and compare.
+
+The main story shown by the plots is that lakes are a widespread geographic feature in Florida, but their sizes are very unevenly distributed. The spatial map shows where lakes appear across the state and makes it possible to identify larger lakes visually. The histogram shows that most lakes in the dataset are relatively small, while only a few lakes are very large. This pattern is also supported by the summary statistics, where the mean lake area is much larger than the median lake area. Lake Okeechobee stands out as the largest lake in the dataset and strongly affects the overall distribution. The county-level bar chart adds another perspective by showing that the number of lake features differs across counties. However, this count does not necessarily mean that these counties have the largest total lake area; it only shows where lake features are most frequent in the dataset.
+
+The model visualization shows a positive association between lake area and lake perimeter. In general, lakes with larger areas also tend to have larger perimeters. However, the plot should be interpreted descriptively rather than causally. The model does not explain why lakes have certain shapes or sizes. It only shows the general relationship between two geometric variables in the dataset. The variation around the model line also suggests that lake shape matters. For example, a lake with a more irregular outline may have a longer perimeter than a lake with a simpler shape, even if their areas are similar.
+
+One difficulty I encountered was the highly skewed distribution of lake sizes. A few lakes are much larger than most others, which made it difficult to show the full distribution clearly on a regular scale. To address this, I used a log scale in the histogram and in the model visualization. This made patterns among smaller lakes more visible and prevented the largest lakes from dominating the entire plot. Another difficulty was working with spatial data, especially understanding why coordinate reference systems matter. I had to make sure that the data was transformed before calculating area and perimeter so that the measurements would be more meaningful.
+
+Additional approaches could be used to explore the dataset further. One next step would be to compare not only the number of lakes by county, but also the total lake area or the average lake size within each county. It would also be interesting to classify lakes into size categories, such as small, medium, and large, to make the distribution easier to interpret. Another possible extension would be to combine the Florida Lakes dataset with other datasets, such as population density, land use, tourism, water quality, or environmental data. However, because these variables are not included in the current dataset, this project focuses only on what the data can support: lake location, lake size, county-level counts, and the relationship between area and perimeter.
+
+I applied several principles of data visualization and design throughout this assignment. Each chart type was chosen based on the question being asked. I used maps for spatial patterns, a histogram for the distribution of lake sizes, an interactive map for exploration, a bar chart for county-level comparison, and a scatterplot with a linear model for the relationship between two numerical variables. I also used clear titles, subtitles, axis labels, and legends to make the purpose of each visualization easier to understand. In the histogram, I added an annotation for the median lake area to make the skewed distribution more transparent. Color was used intentionally in the spatial map to represent lake area rather than for decoration. Overall, I tried to keep the design clean, readable, and focused on the data while avoiding interpretations that go beyond what the dataset can support.
+
+## Limitations
+
+This analysis is limited by the information available in the dataset. The Florida Lakes shapefile contains spatial geometries and a small number of attribute variables, but it does not include information about lake depth, water quality, ecological conditions, tourism, public access, or changes over time. Because of this, the visualizations should not be interpreted as explaining why lakes are located in certain areas or how they affect people, tourism, or the environment.
+
+The analysis focuses on what the dataset can support: the number of lake features, their spatial distribution, their calculated area, and the relationship between area and perimeter. Any broader explanation about Florida’s geography or culture would require additional datasets and further analysis.
+
+## Data Visualization and Design Choices
+
+For this assignment, I tried to match each visualization type to the question being asked. I used a map to show spatial distribution because the dataset contains geographic lake geometries. I used a histogram to show the distribution of lake sizes because I wanted to understand how common different lake sizes are. I used an interactive map to make the data more explorable, allowing users to click on individual lakes and view their name, county, and area. For the model visualization, I used a scatterplot with a linear model because both lake area and perimeter are numerical variables.
+
+I also made several design choices to improve readability. The plots use clear titles, subtitles, and axis labels so that the purpose of each visualization is understandable. For the spatial map, color represents lake area, which gives the color scale a clear analytical purpose. In the histogram and model visualization, I used log scales because the lake sizes are highly skewed. This makes the patterns among smaller lakes more visible and avoids letting a few very large lakes dominate the entire plot.
+
+Following the Week 3.A design slides, I paid closer attention to the **CRAP**
+framework (Contrast, Repetition, Alignment, Proximity) in this revised
+version:
+
+- **Contrast**: the spatial map and the model visualizations use the viridis
+  color scale, which provides strong, colorblind-safe perceptual contrast
+  between low and high values, rather than a default rainbow palette that
+  can be hard to distinguish and is not colorblind-safe.
+- **Repetition**: every figure uses `theme_minimal()` and a consistent
+  title/subtitle structure, so the report reads as one coherent set of
+  visualizations rather than five unrelated plots.
+- **Alignment**: the county bar chart and the model coefficient plot both
+  use `coord_flip()` so that long county names and model term labels remain
+  horizontal and readable, rather than being rotated or truncated.
+- **Proximity**: count and coefficient labels are placed directly next to
+  the bar or point they describe (e.g. the `n` label at the end of each
+  county bar, the median line annotation in the histogram), so the reader
+  does not have to cross-reference a separate legend or table.
+
+I also followed the slides' guidance on image file types for graphs: I
+export each key static figure explicitly with `ggsave()` as a PNG at 300 dpi
+(saved into the repository's shared `figures/` folder), since PNG is the
+appropriate web/report format for graphs, as opposed to JPG, which is
+intended for photographs and can introduce compression artifacts on sharp
+plot lines and text. The interactive map remains as a self-contained `.html`
+widget rather than a static image, since its entire value is the ability to
+click on individual lakes.
+
+I used a minimal theme to keep the visual design clean and focused on the data. I also avoided making claims that go beyond what the dataset can support. Instead of interpreting the lakes in terms of tourism, lifestyle, or environmental quality, I focused on spatial distribution, size, and geometric relationships.
+
+The redesign section also applies these principles directly. The intentionally weak version of the lake-size histogram demonstrates how a regular x-axis can visually hide the distribution of smaller lakes when extreme values are present. The improved version uses a log scale and a median annotation to make the skewed distribution readable without removing Lake Okeechobee or any other large lake from the data.
+
+Finally, every static figure in this report includes descriptive `fig.alt`
+text, so the visual content is accessible to readers using screen readers
+and not only to sighted readers.
+
+## Conclusion
+
+This project helped me connect a personal observation from my year abroad with a data-driven analysis. Before coming to Florida, I mainly associated the state with sunshine, beaches, warm weather, and alligators. After spending several months here, especially near Lakeland, I noticed how present lakes are in the landscape.
+
+The analysis showed that Florida contains thousands of lakes, but that most of them are relatively small. A few very large lakes, especially Lake Okeechobee, strongly influence the overall distribution. The visualizations also showed that lakes are spread across many parts of the state and that lake area and perimeter are clearly related.
+
+Overall, the Florida Lakes dataset was a good choice for this assignment because it allowed me to work with spatial data, create an interactive visualization, and include a simple model. Through the project, I was able to better understand both the dataset and the role of lakes as an important geographic feature of Florida.
+
+
+
+

@@ -1,0 +1,702 @@
+---
+title: "Serve Time Analysis"
+author: "Tugba Gueneysu"
+output: 
+  html_document:
+    keep_md: true
+    toc: true
+    toc_float: true
+date: "2026-06-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(viridis)
+library(plotly)
+library(htmlwidgets)
+library(here)
+```
+
+## Introduction
+
+I have always loved tennis. I grew up watching professionals compete and found
+the sport endlessly fascinating: the strategy, the rhythm, the mental game
+between two players. For a while, I even tried to learn it myself with a
+coach, and I stopped after a few weeks mostly because I saw very little
+progress.
+
+When I came across this dataset, I chose it because it was about tennis, not
+because I had a specific hypothesis in mind. This is a revised version of my
+original mini project. The dataset itself is unchanged, but the analysis below
+addresses feedback I received on the first submission: the original figures
+treated player averages as equally reliable regardless of how many serves
+each player had, used boxplots for groups that were too small to support
+them, and the interpretation went further than 120 serves spread across 15
+players can really support. This version keeps the same overall structure and
+curiosity, but is more careful about what the data can and cannot tell us.
+
+---
+
+## The Dataset
+
+```{r load-data}
+serve <- read_csv(here::here("data", "serve_times.csv"))
+glimpse(serve)
+```
+
+```{r}
+unique(serve$day)
+```
+
+This dataset contains 120 observations across 7 columns, recorded over three
+match days (May 28-30, 2015) at Roland Garros. Each row represents one serve,
+with the following columns:
+
+- **server** - the player who served
+- **seconds_before_next_point** - how long they waited before serving (key variable)
+- **day** - match date
+- **opponent** - who they were playing against
+- **game_score** - the score at the time of the serve
+- **set** - which set the serve occurred in
+- **game** - the game score within that set
+
+```{r}
+serve %>%
+  summarize(across(everything(), ~sum(is.na(.))))
+```
+
+There are no missing values in the variables used for this analysis.
+
+```{r summary}
+summary(serve$seconds_before_next_point)
+```
+
+Serve time ranges from 9 to 38 seconds, with a mean of about 20.4 seconds.
+
+### How many observations per player?
+
+Before making any player comparisons, I want to know how much data backs each
+one up, since an average based on 2 serves is not comparable to an average
+based on 19.
+
+```{r serves-per-player}
+serve_counts <- serve %>%
+  count(server, sort = TRUE) %>%
+  rename(n_serves = n)
+
+serve_counts
+```
+
+The counts vary a great deal: Nick Kyrgios has 19 recorded serves, while John
+Isner has only 2 and Novak Djokovic has only 4. This is expected given how the
+data was collected, three match days, where a player deep in a long,
+contested match naturally generates more serve observations than someone
+whose match ended quickly, but it matters a lot for how much we should trust
+any single player's average. **For the remainder of this analysis, I treat
+players with fewer than 6 recorded serves as too sparse for reliable
+per-player comparisons**, and I flag this threshold directly in every figure
+rather than hiding it in the text.
+
+```{r low-n-flag}
+low_n_players <- serve_counts %>% filter(n_serves < 6) %>% pull(server)
+low_n_players
+```
+
+```{r sets-per-player}
+serve %>%
+  group_by(server) %>%
+  summarize(
+    total_serves   = n(),
+    distinct_sets  = n_distinct(set),
+    distinct_games = n_distinct(game)
+  ) %>%
+  arrange(desc(total_serves))
+```
+
+Players with more serves also tend to appear across more distinct sets and
+games, which is mostly what we would expect: a longer match produces more
+serve observations. The one exception is Nick Kyrgios, who appears in only
+one distinct set but has the most serves of anyone in the dataset.
+
+```{r kyrgios-check}
+serve %>%
+  filter(server == "Nick Kyrgios") %>%
+  select(game_score, set, game)
+```
+
+His single set included several games that went to Deuce and Advantage
+repeatedly, which generates many serves without requiring multiple sets. This
+is a useful reminder that "distinct sets" is an imperfect proxy for match
+length; the number of contested points within a game matters just as much.
+
+```{r}
+unique(serve$game_score)
+```
+
+## Preparing the Visualizations
+
+Before creating the plots, I read Chapter 8 of Kieran Healy's *Data
+Visualization*, which focuses on polishing and refining visualizations. One
+thing that caught my attention was his mention of R's built-in color system,
+explored using `demo('colors')`. I used this to pick deliberate colors rather
+than relying only on ggplot2 defaults. I also use the **viridis** palette in
+several plots in this revised version specifically because it is
+colorblind-safe, which was not a consideration in my first submission.
+
+```{r colors-demo, eval=FALSE}
+demo('colors')
+```
+
+## Visualization 1 - Who Takes the Longest, and How Much Data Supports It?
+
+My professor's feedback on the original version of this plot was that
+comparing player averages without showing sample size is misleading, since
+some players have many observations and others have very few. To address
+this, the revised plot below shows every individual serve as a jittered
+point (rather than collapsing each player to a single bar), and explicitly
+labels the number of serves (`n`) behind each player's row. This keeps the
+raw variability visible instead of hiding it behind a single summary number.
+
+```{r plot1-dotplot, fig.width=9, fig.height=6, fig.alt="A dot plot showing every individual serve time for each of the 15 players, with players ordered by their median serve time. Each player's row is labeled with the number of serves it is based on, ranging from 2 for John Isner to 19 for Nick Kyrgios. Error bars show the standard error around each player's mean, visibly wider for players with fewer observations, making clear that some rows rest on far less reliable data than others."}
+player_order <- serve %>%
+  group_by(server) %>%
+  summarize(med_time = median(seconds_before_next_point), n_serves = n()) %>%
+  arrange(med_time)
+
+serve_labeled <- serve %>%
+  left_join(player_order, by = "server") %>%
+  mutate(
+    server_label = paste0(server, " (n=", n_serves, ")"),
+    server_label = factor(server_label, levels = paste0(player_order$server, " (n=", player_order$n_serves, ")"))
+  )
+
+player_uncertainty <- serve_labeled %>%
+  group_by(server_label, n_serves) %>%
+  summarize(
+    mean_time = mean(seconds_before_next_point),
+    se_time   = sd(seconds_before_next_point) / sqrt(n()),
+    .groups = "drop"
+  )
+
+plot1 <- ggplot(serve_labeled, aes(x = seconds_before_next_point, y = server_label)) +
+  geom_jitter(aes(color = n_serves), height = 0.15, width = 0, size = 2.2, alpha = 0.7) +
+  geom_errorbarh(data = player_uncertainty,
+                  aes(x = mean_time, xmin = mean_time - se_time, xmax = mean_time + se_time),
+                  height = 0.25, linewidth = 0.8, color = "black") +
+  geom_point(data = player_uncertainty, aes(x = mean_time), shape = 18, size = 4, color = "black") +
+  scale_color_viridis_c(name = "Number\nof serves", option = "viridis") +
+  labs(
+    title = "Serve Pause by Player: Every Serve Shown Individually",
+    subtitle = "Black diamonds mark each player's mean; error bars show ±1 standard error.\nWider error bars indicate fewer, less reliable observations.",
+    x = "Seconds before next point",
+    y = NULL
+  ) +
+  theme_minimal()
+
+plot1
+```
+
+Following the guidance from the Week 3.A design slides on using the right
+file type for graphs (PNG/SVG for web, rather than relying only on the
+inline plot embedded by knitr), I export each of this report's key figures
+as a standalone PNG using `ggsave()`, saved into the repository's shared
+`figures/` folder so they can also be reused in the top-level README.
+
+```{r save-plot1}
+ggsave(here::here("figures", "serve_dotplot.png"), plot1, width = 9, height = 6, dpi = 300)
+```
+
+Note how the standard error bars themselves carry information about
+reliability: John Isner's bar (n=2) is wide relative to most other players,
+visually signaling that his mean rests on very little data, while Nick
+Kyrgios's bar (n=19) is comparatively narrow. This was a direct response to
+my professor's suggestion to show "n labels, uncertainty, or filter out
+players with too few observations": this version does both n labels and
+uncertainty together, rather than choosing only one.
+
+Showing every point, rather than only an average, makes the difference in
+reliability visually obvious. Nick Kyrgios's row (n=19) is densely packed and
+his median is well supported by many points clustered together. John Isner's
+row (n=2), by contrast, is just two dots, his "average" is really just two
+serves, and should not be read with the same confidence as Kyrgios's. Pablo
+Andujar (n=6) sits near the top with a relatively high median serve time, but
+with only 6 points behind it, a single unusually slow serve could shift that
+median noticeably. I avoid making strong claims about player personality or
+mental approach from this plot alone; what it shows is variation in tempo
+across players, with the caveat that some of that variation, especially for
+the lowest-n players, may simply reflect noise from a small number of
+observations rather than a stable personal pattern.
+
+## Visualization 2 - Consistency or Variability?
+
+My professor's feedback specifically flagged the original boxplot here as
+misleading for players with only 2, 4, or 6 serves, since quartiles and
+whiskers imply a level of statistical stability that a handful of points
+cannot support. In this revised version, **I restrict the boxplot to players
+with at least 6 recorded serves**, and I show the raw, jittered points
+underneath each box so the reader can see exactly how many observations
+support each summary.
+
+```{r plot2-boxplot, fig.width=9, fig.height=5, fig.alt="A boxplot of serve pause time for the subset of players with at least six recorded serves, with the individual raw serve times jittered on top of each box so the reader can see exactly how many points support each distribution."}
+serve_filtered <- serve %>%
+  left_join(serve_counts, by = "server") %>%
+  filter(n_serves >= 6)
+
+plot2 <- serve_filtered %>%
+  ggplot(aes(x = reorder(server, seconds_before_next_point, median),
+             y = seconds_before_next_point)) +
+  geom_boxplot(fill = "thistle2", color = "royalblue4", outlier.shape = NA) +
+  geom_jitter(width = 0.15, height = 0, alpha = 0.5, size = 1.8, color = "grey20") +
+  coord_flip() +
+  labs(
+    title = "Distribution of Serve Pause by Player (n >= 6 only)",
+    subtitle = "Players with fewer than 6 recorded serves are excluded; see Visualization 1 for those players",
+    x = NULL,
+    y = "Seconds before next point"
+  ) +
+  theme_minimal()
+
+plot2
+```
+
+```{r save-plot2}
+ggsave(here::here("figures", "serve_boxplot.png"), plot2, width = 9, height = 5, dpi = 300)
+```
+
+Restricting the boxplot to players with at least 6 observations removes John
+Isner (n=2), Novak Djokovic (n=4), and Andrey Kuznetsov (n=4) from this
+particular figure, those players are still shown individually in
+Visualization 1, just not summarized with quartiles here. Among the remaining
+players, Novak Djokovic was excluded by this rule even though his box in the
+original version looked very "stable", which is exactly the kind of false
+precision the boxplot can create with too little data. Within the players who
+do meet the threshold, Nick Kyrgios's points cluster tightly together, which
+is a more defensible claim now that it is backed by 19 individual points
+rather than a five-number summary alone. I describe this as *consistency in
+this sample of serves*, rather than as a permanent personality trait, since
+the dataset only covers three match days.
+
+## Defining "Pressure" in the Score Variable
+
+After seeing the unique score situations in the data, I looked up how game
+scoring works in tennis to understand which situations are genuinely
+high-pressure.
+
+In tennis, the standard scoring within a game goes: 0 (Love), 15, 30, 40, and
+if a player reaches 40 and wins the next point, they win the game. When both
+players reach 40, that situation is called **Deuce**, requiring one player to
+win two consecutive points to take the game. The player who wins the first
+point after Deuce gets the **Advantage**: **Ad-in** if it is the server,
+**Ad-out** if it is the receiver.
+
+My original submission grouped scores like `30-40`, `15-40`, and `0-40`
+together with Deuce, Ad-in, and Ad-out under a single "High Pressure" label.
+My professor correctly pointed out that these are not equivalent: `30-40`
+means the server can still win the game outright with the next two points,
+while Deuce, Ad-in, and Ad-out are single-point-decides-everything situations.
+To address this, I now treat pressure as an **ordered** variable with three
+levels instead of a single binary split:
+
+```{r pressure-ordered}
+serve <- serve %>%
+  mutate(
+    pressure_level = case_when(
+      game_score %in% c("Deuce", "Ad-in", "Ad-out") ~ "Critical (Deuce/Advantage)",
+      game_score %in% c("30-40", "15-40", "0-40")   ~ "Game point against server",
+      TRUE ~ "Routine"
+    ),
+    pressure_level = factor(pressure_level,
+                             levels = c("Routine", "Game point against server", "Critical (Deuce/Advantage)"))
+  )
+
+serve %>% count(pressure_level)
+```
+
+This separates the two situations my professor flagged as non-equivalent:
+**Critical** points (Deuce, Ad-in, Ad-out), where the very next point can
+decide the game either way, and **Game point against server** (`30-40`,
+`15-40`, `0-40`), where the server is one point from losing the game but the
+situation is not yet a single coin-flip point. The remaining scores are
+labeled **Routine**.
+
+## Visualization 3 - Serve Time Under Pressure, With Group Sizes Shown
+
+My professor's strongest critique was of the original pressure comparison: it
+showed an average serve time for every player under "high pressure" and "low
+pressure" without showing how many serves were behind each bar, and some
+player-pressure combinations were based on only one or two serves. This is
+exactly the kind of grouping problem that makes a chart look more stable than
+it is.
+
+To fix this properly, I do two things: I show the actual number of
+observations behind every player-pressure combination directly as a label on
+the chart, and I restrict the comparison to players who have **at least 3
+observations in every pressure level being compared**, since a 1-serve or
+2-serve "average" is not a meaningful summary regardless of how it is
+visualized.
+
+```{r pressure-group-sizes}
+pressure_counts <- serve %>%
+  count(server, pressure_level, name = "n") %>%
+  pivot_wider(names_from = pressure_level, values_from = n, values_fill = 0)
+
+pressure_counts
+```
+
+```{r plot3-pressure, fig.width=10, fig.height=6, fig.alt="A grouped, faceted dot-and-line chart showing average serve pause time across three pressure levels (Routine, Game point against server, Critical) for the two players with at least two serves in every pressure level. Each point is labeled with its underlying sample size, so the reader can see exactly how much data supports each average."}
+eligible_players <- pressure_counts %>%
+  filter(Routine >= 2, `Game point against server` >= 2, `Critical (Deuce/Advantage)` >= 2) %>%
+  pull(server)
+
+pressure_summary <- serve %>%
+  filter(server %in% eligible_players) %>%
+  group_by(server, pressure_level) %>%
+  summarize(avg_time = mean(seconds_before_next_point), n = n(), .groups = "drop")
+
+plot3 <- ggplot(pressure_summary, aes(x = pressure_level, y = avg_time, group = server, color = server)) +
+  geom_line(linewidth = 0.8, alpha = 0.7) +
+  geom_point(size = 3) +
+  geom_text(aes(label = paste0("n=", n)), vjust = -1, size = 2.8, show.legend = FALSE) +
+  scale_color_viridis_d(option = "viridis", name = NULL) +
+  labs(
+    title = "Average Serve Pause Across Pressure Levels",
+    subtitle = paste0(
+      "Only players with at least 2 serves in every pressure level are shown (n = ",
+      length(eligible_players), " of 15 players). Point labels show sample size per group."
+    ),
+    x = NULL,
+    y = "Average seconds before next point"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+plot3
+```
+
+```{r save-plot3}
+ggsave(here::here("figures", "serve_pressure.png"), plot3, width = 10, height = 6, dpi = 300)
+```
+
+Applying this filter removes the vast majority of the dataset's players: only
+**2 of 15 players** (Nicolas Almagro and Nick Kyrgios) have at least 2 serves
+recorded in *every* one of the three pressure categories. At a slightly
+looser threshold of just 1 serve per category, 6 players would qualify, and
+at the original 3-per-category threshold I first tried, **zero** players
+qualified, the chart would have been empty. This progression is itself an
+important finding: it shows just how thin this dataset is for the kind of
+fine-grained, 3-level pressure-response claims my original report made. Even
+for the two players who do meet the threshold here, the visible sample sizes
+(shown as labels at each point) make clear that these "qualifying" averages
+are often based on only 2 to 9 serves per group, not enough to support claims
+about personality, mental stability, or psychological tendencies. What this
+chart can responsibly say is limited to: within this specific three-day
+sample, these two particular players showed some difference in average serve
+pause between routine, game-point, and critical (Deuce/Advantage) situations.
+It cannot say anything about why, or whether the pattern would hold up across
+a full season, career, or for any of the other 13 players who simply do not
+have enough recorded serves across all three pressure levels to be included
+here at all.
+
+### Interactive version
+
+Because the static chart above gets visually crowded once multiple players
+and pressure levels are shown together, I also built an interactive version
+using `plotly`. Hovering over any point reveals the exact player name,
+pressure level, average time, and sample size, which lets the reader inspect
+individual data points without the chart becoming cluttered with permanent
+on-chart labels for every combination. This is something a static image
+cannot offer: the reader can choose which series to inspect rather than
+having all labels competing for space at once. I also save this chart as a
+self-contained `.html` file (`serve_pressure_interactive.html`) so it can be
+opened and explored on its own, independently of the full knitted report.
+
+```{r plot3-interactive, fig.width=10, fig.height=6}
+pressure_summary_plotly <- pressure_summary %>%
+  mutate(tooltip_text = paste0(
+    server, "<br>", pressure_level,
+    "<br>Avg time: ", round(avg_time, 1), "s",
+    "<br>n = ", n
+  ))
+
+p3 <- ggplot(pressure_summary_plotly, aes(x = pressure_level, y = avg_time, group = server,
+                                            color = server, text = tooltip_text)) +
+  geom_line(linewidth = 0.8, alpha = 0.7) +
+  geom_point(size = 3) +
+  scale_color_viridis_d(option = "viridis", name = NULL) +
+  labs(
+    title = "Average Serve Pause Across Pressure Levels (interactive)",
+    x = NULL,
+    y = "Average seconds before next point"
+  ) +
+  theme_minimal()
+
+interactive_plot3 <- ggplotly(p3, tooltip = "text")
+interactive_plot3
+```
+
+```{r save-interactive-plot, message=FALSE, warning=FALSE}
+# Save a self-contained HTML version of the interactive chart, so it can be
+# opened and explored independently of the knitted report.
+htmlwidgets::saveWidget(interactive_plot3, file = "serve_pressure_interactive.html", selfcontained = TRUE)
+```
+
+## Visualization 4 - Serve Time Across Every Individual Game Score
+
+My professor also noted that the project mostly reduced the data to
+player-level averages, without making strong use of `game_score`, `set`,
+`game`, or `opponent` individually. The three pressure groups in Visualization
+3 already simplify 17 distinct score states down to 3 categories, which is
+useful for comparison but does lose detail. Here I show serve pause across
+**every individual game score** (not grouped), faceted by `opponent`, to see
+whether the pattern holds up at a finer level of detail and to use the
+`opponent` variable directly rather than leaving it unused.
+
+```{r game-score-counts, results="hide"}
+score_counts <- serve %>% count(game_score, sort = TRUE)
+score_counts
+```
+
+Across the dataset there are 17 distinct `game_score` values, and at least one
+of them (`0-40`) appears only once. This alone is a strong signal that
+analyzing serve time at the level of individual game scores, without any
+grouping, will mean working with extremely thin slices of data for most
+score states.
+
+Because many individual `game_score` values have very few observations (some
+appear only once, e.g. `0-40`), I again show raw points rather than any
+summary statistic, and only facet by opponents who appear in at least 4
+serves so each panel has enough points to be worth showing.
+
+```{r plot4-gamescore, fig.width=10, fig.height=7, fig.alt="A faceted scatterplot showing serve pause time for every individual game score, separated into one panel per opponent (restricted to opponents with at least four recorded serves against them). Points are colored by pressure level. The scores are ordered from least to most pressured within each panel, and the sparse, uneven coverage of scores per opponent is visible directly from how few points appear in many panels."}
+opponent_counts <- serve %>% count(opponent)
+frequent_opponents <- opponent_counts %>% filter(n >= 4) %>% pull(opponent)
+
+score_order <- c("0-0", "15-0", "0-15", "15-15", "30-0", "0-30", "30-15", "15-30",
+                  "40-0", "0-40", "40-15", "15-40", "40-30", "30-40",
+                  "Deuce", "Ad-in", "Ad-out")
+
+plot4 <- serve %>%
+  filter(opponent %in% frequent_opponents) %>%
+  mutate(game_score = factor(game_score, levels = score_order)) %>%
+  ggplot(aes(x = game_score, y = seconds_before_next_point, color = pressure_level)) +
+  geom_jitter(width = 0.1, height = 0, size = 2, alpha = 0.8) +
+  facet_wrap(~ opponent, scales = "free_x") +
+  scale_color_viridis_d(option = "viridis", name = "Pressure level") +
+  labs(
+    title = "Serve Pause by Individual Game Score, Faceted by Opponent",
+    subtitle = "Restricted to opponents with at least 4 recorded serves. Score states are ordered from least to most pressured.",
+    x = "Game score",
+    y = "Seconds before next point"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom")
+
+plot4
+```
+
+```{r save-plot4}
+ggsave(here::here("figures", "serve_gamescore_facet.png"), plot4, width = 10, height = 7, dpi = 300)
+```
+
+This view makes the sparsity problem from Visualization 3 even more visible:
+once we stop grouping scores into three pressure categories, most individual
+opponent-score combinations are represented by a single point. That is not
+enough to say anything about a trend within a single match-up, but it does
+make a useful point about the dataset itself: the apparent patterns in the
+earlier, more aggregated charts are built from relatively thin slices of
+data once you look at the underlying granularity directly, which is exactly
+why I limited the stronger claims throughout this report to broad,
+sample-size-aware statements rather than detailed player-by-opponent
+conclusions.
+
+## Chart Redesign: Before / After
+
+For the required redesign exercise, I use my own original Mini Project 01
+chart as the "before" example, since it is the clearest case in my own work
+of a chart that looked fine on the surface but had a real technical problem
+underneath it.
+
+### Before: The Original Grouped Bar Chart
+
+```{r redesign-before, fig.width=9, fig.height=5, fig.alt="The original grouped bar chart from my first submission, showing average serve pause time for each of 15 players split into High Pressure (red) and Low Pressure (blue) bars, with no indication anywhere on the chart of how many serves each bar represents."}
+pressure_scores_old <- c("Deuce", "Ad-in", "Ad-out", "30-40", "15-40", "0-40")
+
+serve_before <- serve %>%
+  mutate(pressure_old = ifelse(game_score %in% pressure_scores_old,
+                                 "High Pressure", "Low Pressure"))
+
+plot_before <- serve_before %>%
+  group_by(server, pressure_old) %>%
+  summarize(avg_time = mean(seconds_before_next_point), .groups = "drop") %>%
+  ggplot(aes(x = reorder(server, avg_time), y = avg_time, fill = pressure_old)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("High Pressure" = "brown3",
+                               "Low Pressure"  = "deepskyblue2")) +
+  labs(
+    title = "Serve Pace Under Pressure vs. Relaxed Situations",
+    subtitle = "Roland Garros 2015",
+    x = NULL,
+    y = "Average seconds before next point",
+    fill = NULL
+  ) +
+  theme_minimal()
+
+plot_before
+```
+
+```{r save-redesign-before}
+ggsave(here::here("figures", "redesign_before.png"), plot_before, width = 9, height = 5, dpi = 300)
+```
+
+**What is wrong with this chart:** every bar is a mean computed from however
+many serves happen to fall into that player-pressure combination, with no
+indication anywhere on the chart of how many that is. Some bars represent 10
+or more serves; others, as I found out later, represent a single serve. Bar
+charts in particular tend to imply solidity, a tall, fully-colored bar looks
+just as "real" whether it rests on 1 observation or 15. There is also no
+ordered treatment of pressure here: `30-40` (server is one point from losing
+the game, but not yet at a single decisive point) is lumped into the same
+"High Pressure" category as `Deuce` and `Ad-in` (where the very next point
+decides the game), even though my professor correctly pointed out these are
+not equivalent situations. This is "chartjunk" in the sense that the visual
+confidence of the chart (solid, evenly-colored bars) does not match the
+actual confidence the underlying data can support.
+
+### After: The Redesigned Version
+
+The redesigned version is Visualization 3 earlier in this report. I show it
+again here for direct comparison:
+
+```{r redesign-after, fig.width=10, fig.height=6, fig.alt="The redesigned chart: a dot-and-line plot across three ordered pressure levels instead of two unordered ones, restricted to only the players with enough observations in every pressure level, and with every point explicitly labeled with its sample size."}
+plot3
+```
+
+```{r save-redesign-after}
+# Same plot object as Visualization 3 (serve_pressure.png), saved again here
+# under a clearly paired filename so the before/after comparison is obvious
+# when browsing the figures/ folder directly.
+ggsave(here::here("figures", "redesign_after.png"), plot3, width = 10, height = 6, dpi = 300)
+```
+
+**How the redesign fixes the problems:**
+
+1. **Sample size is no longer hidden.** Every point is labeled with `n=`,
+   so the reader can immediately judge how much data supports each value,
+   rather than discovering later (as my professor's feedback forced me to)
+   that some of those tall, confident-looking bars rested on a single serve.
+2. **Players without enough data are excluded rather than included with a
+   false sense of equal reliability.** The original chart showed all 15
+   players' bars at the same visual weight; the redesign only shows the
+   players for whom the comparison is even possible (here, the same filtering
+   logic from Visualization 3, which leaves 2 of 15 players).
+3. **Pressure is now an ordered, three-level variable** (Routine -> Game
+   point against server -> Critical) instead of an arbitrary binary split
+   that treated `30-40` the same as `Deuce`. The x-axis in the redesign
+   reflects an actual progression of pressure rather than two buckets.
+4. **Points and lines instead of bars** avoid implying more visual "weight"
+   or certainty than the data has; a thin line connecting three labeled dots
+   does not carry the same false solidity that a tall, fully-saturated bar
+   does.
+
+## Reflection on Visualization Choices & the Assignment Questions
+
+### What were the original charts you planned to create for this assignment?
+
+My original plan was simple: compare how long different players wait before
+serving. That led to a basic bar chart. During exploration I realized
+averages alone could be misleading because observation counts varied a lot
+across players, which led me to add a second chart looking at variation. The
+third chart grew out of exploring the `game_score` variable and realizing it
+encoded something like pressure.
+
+In this revised version, the underlying questions are the same, but every
+chart now actively accounts for the small and uneven sample sizes that the
+first version glossed over, rather than treating every player average as
+equally trustworthy.
+
+### What story could you tell with your plots, and what changed in this revision?
+
+The story this dataset can responsibly tell is narrower than what I
+originally wrote. It can show that, **within this specific three-day sample**,
+players differ in how long they pause before serving, and that some
+players' tempo is more consistent across points than others. It can also
+show, for the small number of players with enough observations in every
+pressure category, some difference in average pause time between routine and
+high-pressure points.
+
+What it cannot support, and what I overstated in my first submission, is any
+claim about personality, mental stability, or psychological tendencies. A
+single number like "seconds before next point" cannot carry that much
+interpretive weight, especially when some of those numbers are averages of
+only 2 to 4 serves. This revision keeps the curiosity of the original project
+but is much more careful to flag, on the figures themselves, exactly how much
+data supports each visual pattern.
+
+### How did you apply the principles of data visualization and design for this assignment?
+
+I used jittered raw points instead of bars wherever sample size was uneven,
+since a single bar height implies more certainty than 2-19 raw observations
+actually provide. I used the viridis palette for colorblind-safe color
+encoding, and added `fig.alt` text to every chunk so the figures are
+accessible to readers using screen readers. I also added an interactive
+version of the most complex chart (Visualization 3) using `plotly`, since
+that chart has the most overlapping series and benefits the most from
+hover-based exploration rather than static on-chart labels for every point.
+
+Following the Week 3.A slides on design principles, I also paid closer
+attention to the **CRAP** framework (Contrast, Repetition, Alignment,
+Proximity) than in my original submission:
+
+- **Contrast**: I use perceptually distinct color (viridis) and shape (black
+  diamonds for means/medians vs. colored jittered points for raw data) so the
+  summary statistic stands out clearly from the raw observations behind it,
+  rather than relying on color alone for every distinction.
+- **Repetition**: every figure in this report repeats the same visual
+  language: viridis for any encoding tied to sample size or pressure level,
+  `theme_minimal()` throughout, and consistent placement of `n` labels, so
+  the report reads as one coherent piece rather than four unrelated plots.
+- **Alignment**: I consistently flipped or rotated axis labels (`coord_flip()`
+  in Visualizations 1 and 2, angled text in Visualizations 3 and 4) specifically
+  to keep long player names and score labels readable without overlapping,
+  rather than leaving default, misaligned text.
+- **Proximity**: sample-size labels are placed directly next to the point or
+  bar they describe (not in a separate legend or table), so the reader does
+  not have to visually search for which `n` belongs to which player or group.
+
+I also followed the slides' guidance on image file types for graphs: rather
+than relying only on the plot inline-rendered by R Markdown, I export each
+key figure explicitly with `ggsave()` as a PNG at 300 dpi, since PNG is the
+appropriate web/report format for graphs (as opposed to JPG, which is
+better suited to photographs and can introduce compression artifacts on
+sharp plot lines and text).
+
+A clear limitation remains: this is a small dataset (120 observations across
+15 players over three match days), and several of my filtering choices
+(minimum 6 serves for the boxplot, minimum 2 per pressure group, minimum 4
+serves per opponent for Visualization 4) necessarily exclude some players or
+match-ups from some figures. I see this as more honest than the original
+version, which included everyone but implied a false equivalence in
+reliability across very different sample sizes.
+
+My first submission also made limited use of the variables available beyond
+`server` and `seconds_before_next_point`. This revision uses `set` and `game`
+to understand observation counts, `game_score` both as a 3-level pressure
+variable (Visualization 3) and at its full, ungrouped resolution
+(Visualization 4), and `opponent`, which was entirely unused before, as a
+faceting variable in Visualization 4. Visualization 4 in particular shows
+that, once the data is not grouped or averaged, most opponent-score
+combinations rest on a single observation, which is itself a useful finding
+about the limits of this dataset.
+
+## Conclusion
+
+This revised analysis keeps the same curiosity about tennis serve routines
+that motivated my original project, but is considerably more careful about
+what a 120-row dataset spread across 15 players can support. The headline
+finding is not really about any individual player's personality, it is that
+**sample size matters enormously in a dataset this small**, and that
+acknowledging it openly, through visible `n` labels, sample-size filters, and
+raw point overlays, produces a more honest (if more modest) set of
+conclusions than treating every player average as equally meaningful.

@@ -1,0 +1,479 @@
+---
+title: "Data Visualization Project 03 – Final"
+author: "Tugba Gueneysu"
+output:
+  html_document:
+    keep_md: true
+    toc: true
+    toc_float: true
+date: "2026-06-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(lubridate)
+library(ggridges)
+library(viridis)
+library(plotly)
+library(htmlwidgets)
+library(here)
+```
+
+In this exercise I explore methods to create different types of data
+visualizations, including plotting text data and exploring the distributions
+of continuous variables.
+
+## PART 1: Density Plots
+
+Using the dataset obtained from FSU's [Florida Climate Center](https://climatecenter.fsu.edu/climate-data-access-tools/downloadable-data),
+for a station at Tampa International Airport (TPA) for 2022, I attempt to
+recreate the charts shown in the assignment template, which were originally
+generated using data from 2016.
+
+```{r load-weather}
+weather_tpa <- read_csv(here::here("data", "tpa_weather_2022.csv"))
+
+# random sample
+sample_n(weather_tpa, 4)
+```
+
+Before plotting, I convert `month` into a proper factor with month names
+(using `lubridate`), and check for the missing-data placeholder codes
+mentioned in the assignment (`-99.9` for temperatures, `-99.99` for
+precipitation).
+
+```{r clean-weather}
+weather_tpa <- weather_tpa %>%
+  mutate(
+    date = make_date(year, month, day),
+    month_name = factor(month.name[month], levels = month.name)
+  )
+
+weather_tpa %>%
+  summarise(
+    n_missing_temp = sum(max_temp == -99.9 | min_temp == -99.9, na.rm = TRUE),
+    n_missing_precip = sum(precipitation == -99.99, na.rm = TRUE)
+  )
+```
+
+The 2022 station data for TPA does not contain any of these missing-data
+placeholder codes, so no rows needed to be filtered out before plotting.
+
+### (a) Faceted histogram of maximum temperatures by month
+
+```{r part1a, fig.alt="Twelve small histograms, one per month, showing the distribution of daily maximum temperatures at Tampa International Airport in 2022. Cooler months on the left show wider, lower, more spread-out distributions; summer months show tighter distributions concentrated in the high 80s to low 90s degrees Fahrenheit."}
+plot1a <- ggplot(weather_tpa, aes(x = max_temp, fill = month_name)) +
+  geom_histogram(binwidth = 3, color = "white", linewidth = 0.2) +
+  scale_fill_viridis_d(option = "viridis", guide = "none") +
+  facet_wrap(~ month_name, nrow = 3) +
+  labs(
+    title = "Monthly Maximum Temperature Distributions (TPA, 2022)",
+    x = "Maximum temperatures",
+    y = "Number of Days"
+  ) +
+  theme_minimal() +
+  theme(strip.background = element_rect(fill = "grey85", color = NA))
+
+plot1a
+```
+
+```{r save-plot1a}
+ggsave(here::here("figures", "tpa_2022_max_temps_facet.png"), plot1a, width = 9, height = 6, dpi = 300)
+```
+
+This matches the structure of the target chart: warmer, summer months (June
+through September) show narrow, tall histograms concentrated near 90°F,
+while winter months (December through February) are flatter and more spread
+out across the 60-80°F range.
+
+### (b) Density plot of maximum temperatures (overall)
+
+```{r part1b, fig.alt="A single density curve of daily maximum temperatures at Tampa International Airport in 2022, showing a bumpy, multi-modal shape with the largest peak near 90 degrees Fahrenheit and a smaller, broader bump in the 60s and 70s."}
+plot1b <- ggplot(weather_tpa, aes(x = max_temp)) +
+  geom_density(kernel = "rectangular", bw = 0.5, fill = "grey40", color = "black") +
+  labs(
+    title = "Density of Maximum Temperatures (TPA, 2022)",
+    x = "Maximum temperature",
+    y = "density"
+  ) +
+  theme_minimal()
+
+plot1b
+```
+
+```{r save-plot1b}
+ggsave(here::here("figures", "tpa_2022_max_temps_density.png"), plot1b, width = 9, height = 6, dpi = 300)
+```
+
+Using `bw = 0.5` with a rectangular kernel produces a visibly "bumpy",
+high-variance density curve rather than a smooth one, since the bandwidth is
+very narrow. This shows the same overall shape as the histogram in (a): one
+broad, low bump in the 60s-70s range and one tall, sharp peak around 90°F.
+
+### (c) Faceted density plots by month
+
+```{r part1c, fig.alt="Twelve small density curves, one per month, showing the distribution of daily maximum temperatures at Tampa International Airport in 2022, colored from purple in January to yellow in December using the viridis palette."}
+plot1c <- ggplot(weather_tpa, aes(x = max_temp, y = after_stat(density), fill = month_name)) +
+  geom_density(color = "black") +
+  scale_fill_viridis_d(option = "viridis", guide = "none") +
+  facet_wrap(~ month_name, nrow = 3) +
+  labs(
+    title = "Density plots for each month in 2022",
+    x = "Maximum temperatures",
+    y = NULL
+  ) +
+  theme_minimal() +
+  theme(strip.background = element_rect(fill = "grey85", color = NA))
+
+plot1c
+```
+
+```{r save-plot1c}
+ggsave(here::here("figures", "tpa_2022_max_temps_density_facet.png"), plot1c, width = 9, height = 6, dpi = 300)
+```
+
+With default `geom_density()` settings (smoother bandwidth than part (b)),
+each month's distribution becomes easier to read individually. The
+progression from winter to summer is visible as the peak shifts to the right
+and becomes narrower and taller, consistent with both the histogram in (a)
+and the single density curve in (b).
+
+### (d) Ridgeline plot of maximum temperatures by month
+
+```{r part1d, fig.width=8, fig.height=6, fig.alt="A ridgeline plot showing the distribution of daily maximum temperatures for each month of 2022 in Tampa, stacked from January at the bottom to December at the top. Each ridge is colored on a plasma gradient from dark purple at cooler temperatures to bright yellow at warmer temperatures, with a vertical line marking the median temperature for that month."}
+plot1d <- ggplot(weather_tpa, aes(x = max_temp, y = month_name, fill = after_stat(x))) +
+  geom_density_ridges_gradient(
+    scale = 3,
+    quantile_lines = TRUE,
+    quantiles = 2
+  ) +
+  scale_fill_viridis_c(option = "plasma", name = "Max temp (°F)") +
+  labs(
+    title = "Temperature Distribution by Month (TPA, 2022)",
+    x = "Maximum temperature (in Fahrenheit degrees)",
+    y = NULL
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+plot1d
+```
+
+```{r save-plot1d}
+ggsave(here::here("figures", "tpa_2022_max_temps_ridges_plasma.png"), plot1d, width = 8, height = 6, dpi = 300)
+```
+
+The `quantile_lines = TRUE` and `quantiles = 2` settings add a vertical line
+at each month's median, which makes the rightward shift from winter to
+summer easier to track precisely across the 12 stacked ridges, rather than
+just eyeballing where each curve peaks.
+
+### (e) Visualizing precipitation
+
+For this plot of my own choice, I look at total monthly precipitation
+alongside the number of rainy days per month, since a single density plot of
+daily precipitation would be dominated by the many zero-precipitation days
+and would not tell an interesting story on its own.
+
+```{r part1e, fig.alt="A bar chart showing total precipitation in inches for each month of 2022 at Tampa International Airport, colored using a colorblind-safe viridis palette, with the wettest months in late summer standing out clearly from the drier winter and spring months."}
+monthly_precip <- weather_tpa %>%
+  group_by(month_name) %>%
+  summarise(
+    total_precip = sum(precipitation, na.rm = TRUE),
+    rainy_days = sum(precipitation > 0, na.rm = TRUE)
+  )
+
+plot1e <- ggplot(monthly_precip, aes(x = month_name, y = total_precip, fill = total_precip)) +
+  geom_col() +
+  scale_fill_viridis_c(option = "viridis", guide = "none") +
+  labs(
+    title = "Total Monthly Precipitation in Tampa, 2022",
+    x = NULL,
+    y = "Total precipitation (inches)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+plot1e
+```
+
+```{r save-plot1e}
+ggsave(here::here("figures", "tpa_2022_precipitation.png"), plot1e, width = 9, height = 6, dpi = 300)
+```
+
+The chart shows that 2022 precipitation in Tampa was concentrated in a
+handful of months (especially mid-summer), rather than spread evenly across
+the year, consistent with Florida's wet-season/dry-season pattern.
+
+## PART 2: Data on Concrete Strength (Option B)
+
+Concrete is the most important material in **civil engineering**. The
+concrete compressive strength is a highly nonlinear function of *age* and
+*ingredients*. The dataset used here is from the [UCI Machine Learning
+Repository](https://archive.ics.uci.edu/ml/index.php), and it contains 1030
+observations with 9 attributes (8 quantitative input variables and 1
+quantitative output variable). A data dictionary is included below:
+
+Variable                      |    Notes                
+------------------------------|-------------------------------------------
+Cement                        | kg in a $m^3$ mixture             
+Blast Furnace Slag            | kg in a $m^3$ mixture  
+Fly Ash                       | kg in a $m^3$ mixture             
+Water                         | kg in a $m^3$ mixture              
+Superplasticizer              | kg in a $m^3$ mixture
+Coarse Aggregate              | kg in a $m^3$ mixture
+Fine Aggregate                | kg in a $m^3$ mixture      
+Age                           | in days                                             
+Concrete compressive strength | MPa, megapascals
+
+```{r load-concrete}
+concrete <- read_csv(here::here("data", "concrete.csv"), col_types = cols())
+```
+
+I create a new attribute for visualization purposes, `strength_range`, which
+bins compressive strength into quintiles:
+
+```{r strength-range}
+new_concrete <- concrete %>%
+  mutate(strength_range = cut(Concrete_compressive_strength,
+                               breaks = quantile(Concrete_compressive_strength,
+                                                  probs = seq(0, 1, 0.2)),
+                               include.lowest = TRUE))
+```
+
+### 1. Distribution of two continuous variables
+
+```{r part2-1-cement, fig.alt="A histogram showing the distribution of cement content across the 1030 concrete samples, right-skewed with most samples between roughly 150 and 350 kilograms per cubic meter and a long tail toward higher values."}
+plot2_1a <- ggplot(new_concrete, aes(x = Cement)) +
+  geom_histogram(binwidth = 20, fill = viridis(1), color = "white") +
+  labs(
+    title = "Distribution of Cement Content",
+    x = "Cement (kg in a m³ mixture)",
+    y = "Number of samples"
+  ) +
+  theme_minimal()
+
+plot2_1a
+```
+
+```{r part2-1-strength, fig.alt="A histogram showing the distribution of concrete compressive strength across the 1030 samples, roughly bell-shaped but slightly right-skewed, ranging from near zero to over 80 megapascals."}
+plot2_1b <- ggplot(new_concrete, aes(x = Concrete_compressive_strength)) +
+  geom_histogram(binwidth = 5, fill = viridis(1, option = "magma"), color = "white") +
+  labs(
+    title = "Distribution of Concrete Compressive Strength",
+    x = "Compressive strength (MPa)",
+    y = "Number of samples"
+  ) +
+  theme_minimal()
+
+plot2_1b
+```
+
+```{r save-plot2-1}
+ggsave(here::here("figures", "concrete_cement_distribution.png"), plot2_1a, width = 7, height = 5, dpi = 300)
+ggsave(here::here("figures", "concrete_strength_distribution.png"), plot2_1b, width = 7, height = 5, dpi = 300)
+```
+
+**Do the ranges make sense?** Cement content ranges from about 100 to over
+500 kg/m³, and the distribution is right-skewed: most mixtures use a
+moderate amount of cement, while a smaller number of mixtures use
+considerably more. Compressive strength ranges from close to 0 MPa to over
+80 MPa, with most samples falling between roughly 20 and 50 MPa. Both ranges
+make sense for concrete: very low strength values correspond to young or
+poorly cured samples, and the maximum of around 80 MPa is consistent with
+high-strength concrete mixtures, which can realistically reach that range in
+practice.
+
+### 2. Strength by age
+
+```{r part2-2, fig.alt="A boxplot showing concrete compressive strength at each distinct age value measured in days, colored by quintile strength range, showing that strength generally increases with age up to around 90 days and then levels off or even decreases slightly at very long ages such as 270 or 365 days."}
+plot2_2 <- ggplot(new_concrete, aes(x = factor(Age), y = Concrete_compressive_strength, fill = strength_range)) +
+  geom_boxplot() +
+  scale_fill_viridis_d(option = "viridis", name = "Strength Range") +
+  labs(
+    title = "Concrete Compressive Strength by Age",
+    x = "Age (in days)",
+    y = "Compressive Strength (in MPa)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+plot2_2
+```
+
+```{r save-plot2-2}
+ggsave(here::here("figures", "concrete_strength_by_age.png"), plot2_2, width = 10, height = 6, dpi = 300)
+```
+
+**Comment on results:** compressive strength increases sharply over the
+first weeks of curing, which matches the well-known chemistry of concrete:
+most of the strength gain happens in the first 28 days as the cement
+hydrates, and gains continue more slowly afterward. Strength levels off by
+around 90 days, and the very long-age samples (270, 365 days) do not show
+much further increase, and in some cases show high variability instead. This
+makes sense, since very-long-age samples in this dataset are fewer in number
+and may include different mixture compositions than the more commonly-tested
+ages like 28 or 56 days.
+
+### 3. Strength versus cement, age, and water
+
+```{r part2-3-static, fig.alt="A scatterplot of compressive strength against cement content, where each point is sized by age in days and colored by water content using a colorblind-safe viridis scale; higher cement content is generally associated with higher strength, and points with less water tend to cluster toward higher strength values."}
+plot2_3 <- ggplot(new_concrete, aes(x = Cement, y = Concrete_compressive_strength, size = Age, color = Water)) +
+  geom_point(alpha = 0.6) +
+  scale_color_viridis_c(option = "viridis") +
+  labs(
+    title = "Exploring Strength versus (Cement, Age, and Water)",
+    x = "Cement",
+    y = "Strength",
+    size = "Age",
+    color = "Water",
+    caption = "Age is measured in days"
+  ) +
+  theme_minimal()
+
+plot2_3
+```
+
+```{r save-plot2-3}
+ggsave(here::here("figures", "concrete_cement_strength_scatter.png"), plot2_3, width = 9, height = 6, dpi = 300)
+```
+
+**Comment on results, paying attention to aesthetic mappings:** this
+scatterplot maps four variables at once: `Cement` and
+`Concrete_compressive_strength` are mapped to the x- and y-axes, `Age` is
+mapped to point size, and `Water` is mapped to a colorblind-safe viridis
+color scale, rather than encoding any of this meaning by color alone, shape
+and position carry information too. The plot shows a general positive
+relationship between cement content and strength, but the relationship is
+far from perfectly linear; water content and age both visibly interact with
+it. Mixtures with lower water content (darker purple points) tend to reach
+higher strength values for a given amount of cement, which is consistent
+with the well-known effect of the water-to-cement ratio on concrete
+strength. Larger points (older samples) are also more common toward the
+upper end of the strength range, reflecting the strength-gain-over-time
+pattern seen in Section 2 above.
+
+## Interactive Visualization
+
+The static scatterplot above maps four variables (`Cement`,
+`Concrete_compressive_strength`, `Age`, `Water`) at once, which makes it hard
+to read exact values for any individual sample once points overlap. I
+rebuild it with `plotly` so the reader can hover over any point to see its
+exact cement content, strength, age, and water content. This is something a
+static image cannot offer: with 1030 overlapping points, a static label for
+every point would be illegible, while a hover-based interactive version lets
+the reader inspect exactly the points they are curious about, on demand,
+without cluttering the chart for everyone else.
+
+```{r interactive-concrete, fig.width=9, fig.height=6}
+p_interactive <- ggplot(new_concrete, aes(
+  x = Cement,
+  y = Concrete_compressive_strength,
+  size = Age,
+  color = Water,
+  text = paste0(
+    "Cement: ", Cement, " kg/m³",
+    "<br>Strength: ", round(Concrete_compressive_strength, 1), " MPa",
+    "<br>Age: ", Age, " days",
+    "<br>Water: ", Water, " kg/m³"
+  )
+)) +
+  geom_point(alpha = 0.6) +
+  scale_color_viridis_c(option = "viridis") +
+  labs(
+    title = "Exploring Strength versus (Cement, Age, and Water) — interactive",
+    x = "Cement",
+    y = "Strength"
+  ) +
+  theme_minimal()
+
+interactive_concrete_plot <- ggplotly(p_interactive, tooltip = "text")
+interactive_concrete_plot
+```
+
+```{r save-interactive-concrete}
+# Save a self-contained HTML version of the interactive chart, so it can be
+# opened and explored independently of the knitted report.
+htmlwidgets::saveWidget(interactive_concrete_plot, file = here::here("project-03", "concrete_interactive.html"), selfcontained = TRUE)
+```
+
+## Chart Redesign: Before / After
+
+For the required redesign exercise, I take an uglier, earlier draft version
+of the compressive strength histogram from Section 2.1 and fix it.
+
+### Before: The Problematic Version
+
+```{r redesign-before, fig.alt="An earlier, problematic version of the compressive strength histogram: 20 wide bins on a linear scale, filled entirely in a single flat red color with no colorblind-safe encoding, no axis units in the labels, and no title describing what the units on either axis represent."}
+plot_redesign_before <- ggplot(new_concrete, aes(x = Concrete_compressive_strength)) +
+  geom_histogram(bins = 20, fill = "red") +
+  theme_minimal() +
+  labs(title = "Bad Visualization (No transformation)")
+
+plot_redesign_before
+```
+
+```{r save-redesign-before}
+ggsave(here::here("figures", "concrete_redesign_before.png"), plot_redesign_before, width = 7, height = 5, dpi = 300)
+```
+
+**What is wrong with this chart:** the fill color is a flat, saturated red
+with no analytical purpose, it does not encode any variable, and pure red is
+one of the worst color choices for colorblind accessibility since it is
+difficult to distinguish from dark backgrounds or other warm hues for some
+forms of color vision deficiency. The title "Bad Visualization (No
+transformation)" is also not an actual, informative title; it describes the
+exercise rather than the data. Neither axis label specifies units (MPa,
+number of samples), so a reader unfamiliar with the dataset cannot tell what
+is being measured. With only 20 wide bins on a linear x-axis, the histogram
+also loses some of the finer detail in the right-skewed tail of the
+distribution.
+
+### After: The Redesigned Version
+
+```{r redesign-after, fig.alt="The redesigned histogram of concrete compressive strength: a colorblind-safe viridis fill, a log-scaled x-axis, finer 30 bins, fully labeled axes with units, and an informative title."}
+plot_redesign_after <- ggplot(new_concrete, aes(x = Concrete_compressive_strength)) +
+  geom_histogram(bins = 30, fill = viridis(1, option = "magma"), color = "white") +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of Concrete Compressive Strength (Log Scale)",
+    x = "Compressive strength (MPa, log scale)",
+    y = "Number of samples"
+  ) +
+  theme_minimal()
+
+plot_redesign_after
+```
+
+```{r save-redesign-after}
+ggsave(here::here("figures", "concrete_redesign_after.png"), plot_redesign_after, width = 7, height = 5, dpi = 300)
+```
+
+**How the redesign fixes the problems:**
+
+1. **Colorblind-safe fill**: the flat red is replaced with a single color
+   drawn from the viridis/magma palette, which is designed to remain
+   distinguishable under common forms of color vision deficiency, rather
+   than an arbitrary, purely decorative red.
+2. **Informative title and fully labeled, unit-bearing axes**: the title now
+   names the variable being shown, and both axes specify their units (MPa
+   for strength, a count of samples for the y-axis), so the chart is
+   interpretable without needing the surrounding report text.
+3. **Log-scaled x-axis with finer binning**: 30 bins on a log scale reveal
+   more structure in the right-skewed tail of the distribution than 20
+   wide, linearly-spaced bins did, without changing the underlying data.
+
+## Conclusion
+
+This project let me apply density plots, ridgeline plots, faceting, an
+interactive `plotly` chart, and a deliberate before/after chart redesign to
+two very different datasets: daily weather at Tampa International Airport
+and concrete compressive strength testing. Across both datasets, the
+recurring theme was that color, scale transformations (log scales in
+particular), and explicit annotation (quantile lines, hover tooltips, units
+in axis labels) consistently made the underlying patterns easier to read
+without changing the data itself.
